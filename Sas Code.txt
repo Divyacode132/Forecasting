@@ -1,0 +1,187 @@
+proc import out=unemployment datafile="/home/u64006373/sasuserTeja.v94/ForecastingClass/GroupProject/Unemployment_Rate.xlsx"
+dbms=xlsx replace; 
+run;
+
+proc sgplot data=unemployment;
+   series x=Date y=Age_16_19;
+   series x=Date y=Age_20_24;
+   series x=Date y=Age_25_34;
+   series x=Date y=Age_35_44;
+   series x=Date y=Age_45_54;
+   series x=Date y=Age_55_64;
+   series x=Date y=Age_65_above;
+   title "Unemployment Trend by Age Groups";
+run;
+
+proc sgplot data=unemployment;
+   series x=Date y=Age_20_24;
+run;
+
+proc timeseries data=unemployment plots=(acf pacf) out=_null_;
+	var Age_20_24;
+	corr acf/nlag=36;
+	title "Autocorrelations for Age_20_24";
+run;
+
+  /* Data Partition 80/20 */
+data unemployment;
+	set unemployment;
+	t=_n_;
+	age_20_24_new=age_20_24;
+	if t>154 then age_20_24_new=.;
+run;
+
+/* Simple Linear Regression Model */
+proc reg data=unemployment;
+	model age_20_24_new=t/clb dwprob;
+	output out=age_20_24_out p=age_20_24_predict r=age_20_24_resid;
+run;
+
+data age_20_24_out;
+	set age_20_24_out;
+	if t<=154 then
+		do;
+			mae_fit=abs(age_20_24_resid);
+			mse_fit=age_20_24_resid**2;
+		end;
+	else if t>154 then
+		do;
+			mae_acc=abs(age_20_24-age_20_24_predict);
+			mse_acc=(age_20_24-age_20_24_predict)**2;
+		end;
+run;
+
+proc means data=age_20_24_out n mean maxdec=3;
+	var mae_fit mae_acc mse_fit mse_acc;
+run;
+
+proc sgplot data=age_20_24_out;
+   series x=Date y=age_20_24;
+   series x=Date y=age_20_24_predict;
+   title "Actual vs Predicted";
+run;
+
+/* Non-Linear Regression Model */
+
+data unemployment;
+	set unemployment;
+	t2=t*t;
+run;
+
+proc reg data=unemployment;
+	model age_20_24_new=t t2/clb dwprob;
+	output out=age_20_24_out2 p=age_20_24_predict r=age_20_24_resid;
+run; 
+
+data age_20_24_out2;
+	set age_20_24_out2;
+	if t<=154 then
+		do;
+			mae_fit=abs(age_20_24_resid);
+			mse_fit=age_20_24_resid**2;
+		end;
+	else if t>154 then
+		do;
+			mae_acc=abs(age_20_24-age_20_24_predict);
+			mse_acc=(age_20_24-age_20_24_predict)**2;
+		end;
+run;
+
+proc means data=age_20_24_out2 n mean maxdec=3;
+	var mae_fit mae_acc mse_fit mse_acc;
+run;
+
+proc sgplot data=age_20_24_out2;
+   series x=Date y=age_20_24;
+   series x=Date y=age_20_24_predict;
+   title "Non-Linear Actual vs Predicted";
+run;
+
+
+/* Exponential Smoothing Models */
+
+proc esm data=unemployment back=40 lead=40 print=all outfor=unemploymentout1 out=_null_;
+     forecast Age_20_24/model=linear;
+run;
+
+proc esm data=unemployment print=all back=40 lead=40 outfor=unemploymentout2 out=_null_;
+    forecast Age_20_24/model=damptrend;
+run;
+
+proc sgplot data=unemploymentout1;
+	series x=_timeid_ y=actual;
+	series x=_timeid_ y=predict;
+	title "Linear Exponential";
+run;
+
+proc sgplot data=unemploymentout2;
+	series x=_timeid_ y=actual;
+	series x=_timeid_ y=predict;
+	title "Damped Trend Exponential";
+run;
+
+/* ARIMA Models */
+
+          /* Check for 1st order differencing */
+         data unemployment;
+         	set unemployment;
+         	Age_20_24_diff1=dif(age_20_24_new);
+         run;
+
+         proc timeseries data=unemployment plots=(acf pacf) out=_null_;
+         	var Age_20_24_diff1;
+         	corr acf/nlag=36;
+         run;
+
+         /* Check for 1st order differencing again*/
+         data unemployment;
+         	set unemployment;
+         	Age_20_24_diff2=dif(Age_20_24_diff1);
+         run;
+
+         proc timeseries data=unemployment plots=(acf pacf) out=_null_;
+         	var Age_20_24_diff2;
+         	corr acf/nlag=36;
+         run;
+
+/*ARMA Combination */
+proc ARIMA data=unemployment;
+   identify var=age_20_24_new(1,1) nlag=36 whitenoise=ignoremiss; /* 1st order diff twice*/
+   estimate p=12 q=3 whitenoise=ignoremiss; /*ARMA(12,2,3)*/
+   forecast id=date interval=month lead=14 out=unemploymentout3;
+run;
+
+proc ARIMA data=unemployment;
+   identify var=age_20_24_new(1,1) nlag=36 whitenoise=ignoremiss; /* 1st order diff twice*/
+   *estimate p=4 q=3 whitenoise=ignoremiss; /*ARMA(4,2,3)*/
+   *forecast id=date interval=month lead=14 out=unemploymentout3;
+run;
+
+data unemploymentout4;
+	merge unemploymentout3 unemployment;
+	keep t date age_20_24 age_20_24_new forecast residual;
+run;
+
+data unemploymentout4;
+	set unemploymentout4;
+	if t<=154 then
+		do; 
+			mae_fit=abs(residual);
+			mse_fit=residual**2;
+		end;
+	else if t>154 then
+		do;
+			mae_acc=abs(age_20_24-forecast);
+			mse_acc=(age_20_24-forecast)**2;
+		end;
+run;
+
+proc means data=unemploymentout4 n mean maxdec=3;
+	var mae_fit mse_fit  mae_acc mse_acc ;
+run;
+
+proc sgplot data=unemploymentout4;
+	series x=t y=age_20_24;
+	series x=t y=forecast;
+	title "Actual vs Predicted";
+run;
